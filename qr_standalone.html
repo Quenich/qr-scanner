@@ -1,0 +1,152 @@
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR読取</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #111;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      color: #fff;
+      font-family: sans-serif;
+      padding: 16px;
+    }
+    /* 既存のvideo CSSを置き換え */
+#video-wrapper {
+  width: 100%;
+  max-width: 400px;
+  position: relative;
+  z-index: 0;
+}
+video {
+  width: 100%;
+  border-radius: 12px;
+  border: 2px solid #444;
+  display: block;         /* iOS Safariのinline video問題を回避 */
+  pointer-events: none;  /* videoへのタッチを無効化 */
+}
+#btn-cancel {
+  margin-top: 24px;
+  padding: 12px 40px;
+  background: #c62828;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+  position: relative;    /* ← 追加 */
+  z-index: 10;           /* ← 追加 */
+  pointer-events: auto;  /* ← 追加 */
+}
+  </style>
+</head>
+<body>
+  <!-- video を wrapper で囲む -->
+<div id="video-wrapper">
+  <video id="qr-video" playsinline muted autoplay></video>
+</div>
+<div id="status">カメラを起動中...</div>
+<div id="result"></div>
+<button id="btn-cancel" onclick="closeMe()">キャンセル</button>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const rowId  = Number(params.get('rowId'));
+
+    let stream   = null;
+    let animId   = null;
+    let scanLock = false;
+
+    // ---- カメラ起動 ----
+    async function startCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false,
+        });
+        const video = document.getElementById('qr-video');
+        video.srcObject = stream;
+        await video.play();
+        document.getElementById('status').textContent = 'QRコードをかざしてください';
+        startLoop(video);
+      } catch (e) {
+        document.getElementById('status').textContent =
+          e.name === 'NotAllowedError'
+            ? 'カメラの許可が必要です。ブラウザ設定を確認してください。'
+            : 'カメラを起動できませんでした。';
+      }
+    }
+
+    // ---- スキャンループ ----
+    function startLoop(video) {
+      const canvas = document.createElement('canvas');
+      const ctx    = canvas.getContext('2d');
+
+      function tick() {
+        if (scanLock) { animId = requestAnimationFrame(tick); return; }
+
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          canvas.width  = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+
+          if (typeof BarcodeDetector !== 'undefined') {
+            new BarcodeDetector({ formats: ['qr_code'] })
+              .detect(canvas)
+              .then(codes => { if (codes.length > 0) onScan(codes[0].rawValue); })
+              .catch(() => {});
+          } else if (typeof jsQR !== 'undefined') {
+            const img  = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(img.data, img.width, img.height);
+            if (code) onScan(code.data);
+          }
+        }
+        animId = requestAnimationFrame(tick);
+      }
+
+      animId = requestAnimationFrame(tick);
+    }
+
+    // ---- QR読取成功 ----
+    // ---- QR読取成功 ----
+// onScan関数のBroadcastChannel部分を置き換え
+function onScan(value) {
+  if (scanLock) return;
+  scanLock = true;
+
+  cancelAnimationFrame(animId);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+
+  document.getElementById('result').textContent = '読取: ' + value;
+  document.getElementById('status').textContent = '送信中...';
+
+  // window.openerにpostMessageで送る（クロスオリジン対応）
+  if (window.opener) {
+    window.opener.postMessage(
+      { type: 'QR_SCANNED', rowId: rowId, value: value },
+      '*'  // GAS WebAppのoriginが変動するため * を使用
+    );
+    setTimeout(() => window.close(), 300);
+  } else {
+    document.getElementById('status').textContent =
+      '親画面が見つかりません。値をメモして手動で閉じてください: ' + value;
+  }
+}
+
+    // ---- キャンセル ----
+    function closeMe() {
+      if (animId) cancelAnimationFrame(animId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      window.close();
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
